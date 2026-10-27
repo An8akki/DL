@@ -1,266 +1,254 @@
-# SENTIMENT CLASSIFICATION USING AUTOENCODER
-
 import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
+
 from tensorflow.keras.datasets import imdb
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model
 from sklearn.metrics import accuracy_score, classification_report
 
-# Load IMDB dataset
 vocab_size = 10000
 max_len = 200
 
-(x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=vocab_size)
+(x_train, y_train), (x_test, y_test) = imdb.load_data(
+    num_words=vocab_size
+)
 
-# Make all reviews same length
-x_train = pad_sequences(x_train, maxlen=max_len, padding='post')
-x_test = pad_sequences(x_test, maxlen=max_len, padding='post')
+x_train = pad_sequences(x_train, maxlen=max_len).astype("float32")
+x_test = pad_sequences(x_test, maxlen=max_len).astype("float32")
 
 # Normalize
-x_train = x_train.astype('float32') / vocab_size
-x_test = x_test.astype('float32') / vocab_size
+x_train = x_train / vocab_size
+x_test = x_test / vocab_size
 
-# -------- Autoencoder --------
-input_layer = Input(shape=(max_len,))
-
+print("Training samples:", len(x_train))
+print("Testing samples:", len(x_test))
+print("Input shape:", x_train.shape)
 # Encoder
-encoded = Dense(128, activation='relu')(input_layer)
-encoded = Dense(64, activation='relu')(encoded)
-latent = Dense(32, activation='relu', name='latent_layer')(encoded)
+inp = Input(shape=(200,))
+x = Dense(64, activation="relu")(inp)
+latent = Dense(32, activation="relu")(x)
 
 # Decoder
-decoded = Dense(64, activation='relu')(latent)
-decoded = Dense(128, activation='relu')(decoded)
-decoded = Dense(max_len, activation='sigmoid')(decoded)
+x = Dense(64, activation="relu")(latent)
+out = Dense(200, activation="sigmoid")(x)
 
-autoencoder = Model(input_layer, decoded)
+autoencoder = Model(inp, out)
+autoencoder.compile(optimizer="adam", loss="mse")
 
-autoencoder.compile(optimizer='adam', loss='mse')
-
-# Train Autoencoder
-autoencoder.fit(
+history = autoencoder.fit(
     x_train, x_train,
     epochs=5,
     batch_size=128,
-    validation_split=0.2,
-    verbose=1
+    validation_split=0.2
 )
+# Extract 32 compressed features
+encoder = Model(inp, latent)
 
-# -------- Extract latent features --------
-encoder = Model(input_layer, latent)
+X_train = encoder.predict(x_train, verbose=0)
+X_test = encoder.predict(x_test, verbose=0)
 
-X_train_features = encoder.predict(x_train, verbose=0)
-X_test_features = encoder.predict(x_test, verbose=0)
-
-# -------- Sentiment Classifier --------
+# Build classifier
 classifier_input = Input(shape=(32,))
-x = Dense(16, activation='relu')(classifier_input)
-output = Dense(1, activation='sigmoid')(x)
+x = Dense(16, activation="relu")(classifier_input)
+output = Dense(1, activation="sigmoid")(x)
 
 classifier = Model(classifier_input, output)
 
 classifier.compile(
-    optimizer='adam',
-    loss='binary_crossentropy',
-    metrics=['accuracy']
+    optimizer="adam",
+    loss="binary_crossentropy",
+    metrics=["accuracy"]
 )
 
 classifier.fit(
-    X_train_features, y_train,
+    X_train, y_train,
     epochs=5,
     batch_size=128,
-    validation_split=0.2,
-    verbose=1
+    validation_split=0.2
 )
+probabilities = classifier.predict(X_test, verbose=0)
+predictions = (probabilities > 0.5).astype(int).ravel()
 
-# -------- Prediction --------
-y_prob = classifier.predict(X_test_features, verbose=0)
-y_pred = (y_prob > 0.5).astype(int).ravel()
+print("Accuracy:", accuracy_score(y_test, predictions))
 
-# -------- Results --------
-print("\nAccuracy:", accuracy_score(y_test, y_pred))
-print("\nClassification Report:")
 print(classification_report(
     y_test,
-    y_pred,
-    target_names=['Negative', 'Positive']
+    predictions,
+    target_names=["Negative", "Positive"]
 ))
+plt.plot(history.history["loss"], label="Training Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
 
-# VARIATIONAL AUTOENCODER (VAE) ON MNIST -- PYTORCH VERSION
-# ------------------------------------------------------------
-
+plt.xlabel("Epoch")
+plt.ylabel("Reconstruction Loss")
+plt.title("IMDB Autoencoder Learning Curve")
+plt.legend()
+plt.show()
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import numpy as np
-import os # Import the os module
+
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Create the output directory if it doesn't exist
-output_dir = "/mnt/user-data/outputs/"
-os.makedirs(output_dir, exist_ok=True)
+train_data = datasets.MNIST(
+    root="./data",
+    train=True,
+    download=True,
+    transform=transforms.ToTensor()
+)
 
-# -------------------------------------------------
-# 1. Data: MNIST handwritten digits (via torchvision)
-# -------------------------------------------------
-original_dim = 784
-latent_dim = 2   # 2D so we can easily visualize/generate & plot the latent space
-batch_size = 128
+test_data = datasets.MNIST(
+    root="./data",
+    train=False,
+    download=True,
+    transform=transforms.ToTensor()
+)
 
-transform = transforms.Compose([
-    transforms.ToTensor(),                       # scales pixels to [0, 1]
-    transforms.Lambda(lambda x: x.view(-1)),      # flatten 28x28 -> 784
-])
+train_loader = DataLoader(
+    train_data, batch_size=128, shuffle=True
+)
 
-train_dataset = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
-test_dataset = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+test_loader = DataLoader(
+    test_data, batch_size=128, shuffle=False
+)
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+print("Device:", device)
+# Encoder
+encoder = nn.Sequential(
+    nn.Linear(784, 128),
+    nn.ReLU()
+).to(device)
 
-# -------------------------------------------------
-# 2. VAE model: encoder -> reparameterize -> decoder
-# -------------------------------------------------
-class VAE(nn.Module):
-    def __init__(self, original_dim=784, latent_dim=2):
-        super().__init__()
-        # Encoder
-        self.enc_fc1 = nn.Linear(original_dim, 256)
-        self.enc_fc2 = nn.Linear(256, 64)
-        self.fc_mean = nn.Linear(64, latent_dim)
-        self.fc_logvar = nn.Linear(64, latent_dim)
+mean_layer = nn.Linear(128, 2).to(device)
+logvar_layer = nn.Linear(128, 2).to(device)
 
-        # Decoder
-        self.dec_fc1 = nn.Linear(latent_dim, 64)
-        self.dec_fc2 = nn.Linear(64, 256)
-        self.dec_out = nn.Linear(256, original_dim)
+# Decoder
+decoder = nn.Sequential(
+    nn.Linear(2, 128),
+    nn.ReLU(),
+    nn.Linear(128, 784),
+    nn.Sigmoid()
+).to(device)
 
-    def encode(self, x):
-        h = F.relu(self.enc_fc1(x))
-        h = F.relu(self.enc_fc2(h))
-        return self.fc_mean(h), self.fc_logvar(h)
+# Combine parameters for training
+parameters = (
+    list(encoder.parameters())
+    + list(mean_layer.parameters())
+    + list(logvar_layer.parameters())
+    + list(decoder.parameters())
+)
 
-    def reparameterize(self, z_mean, z_logvar):
-        # The "reparameterization trick": sample z = mean + std * epsilon
-        # so gradients can flow through the sampling step.
-        std = torch.exp(0.5 * z_logvar)
-        epsilon = torch.randn_like(std)
-        return z_mean + std * epsilon
+optimizer = torch.optim.Adam(parameters, lr=0.001)
+epochs = 10
+loss_curve = []
 
-    def decode(self, z):
-        h = F.relu(self.dec_fc1(z))
-        h = F.relu(self.dec_fc2(h))
-        return torch.sigmoid(self.dec_out(h))
+for epoch in range(epochs):
+    total_loss = 0
 
-    def forward(self, x):
-        z_mean, z_logvar = self.encode(x)
-        z = self.reparameterize(z_mean, z_logvar)
-        reconstruction = self.decode(z)
-        return reconstruction, z_mean, z_logvar
+    for images, labels in train_loader:
+        x = images.view(-1, 784).to(device)
 
-# -------------------------------------------------
-# 3. Loss = reconstruction loss + KL divergence
-# -------------------------------------------------
-def vae_loss(reconstruction, x, z_mean, z_logvar):
-    # Reconstruction loss: binary cross-entropy summed over pixels
-    recon_loss = F.binary_cross_entropy(reconstruction, x, reduction="sum")
-    # KL divergence: keeps the latent distribution close to N(0, 1)
-    kl_loss = -0.5 * torch.sum(1 + z_logvar - z_mean.pow(2) - z_logvar.exp())
-    return recon_loss + kl_loss, recon_loss, kl_loss
-
-# -------------------------------------------------
-# 4. Train
-# -------------------------------------------------
-model = VAE(original_dim, latent_dim).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-epochs = 15
-
-for epoch in range(1, epochs + 1):
-    model.train()
-    total_loss, total_recon, total_kl, n_samples = 0.0, 0.0, 0.0, 0
-
-    for x, _ in train_loader:
-        x = x.to(device)
         optimizer.zero_grad()
 
-        reconstruction, z_mean, z_logvar = model(x)
-        loss, recon_loss, kl_loss = vae_loss(reconstruction, x, z_mean, z_logvar)
+        # Encoder
+        h = encoder(x)
+        mean = mean_layer(h)
+        logvar = logvar_layer(h)
+
+        # Reparameterization trick
+        std = torch.exp(0.5 * logvar)
+        z = mean + std * torch.randn_like(std)
+
+        # Decoder
+        output = decoder(z)
+
+        # Reconstruction loss
+        recon_loss = F.binary_cross_entropy(
+            output, x, reduction="sum"
+        )
+
+        # KL divergence
+        kl_loss = -0.5 * torch.sum(
+            1 + logvar - mean.pow(2) - logvar.exp()
+        )
+
+        # Total loss
+        loss = recon_loss + kl_loss
 
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
-        total_recon += recon_loss.item()
-        total_kl += kl_loss.item()
-        n_samples += x.size(0)
+
+    avg_loss = total_loss / len(train_data)
+    loss_curve.append(avg_loss)
 
     print(
-        f"Epoch {epoch:2d}/{epochs} | "
-        f"loss: {total_loss / n_samples:.4f} | "
-        f"recon: {total_recon / n_samples:.4f} | "
-        f"kl: {total_kl / n_samples:.4f}"
+        f"Epoch {epoch+1}/{epochs}, "
+        f"Loss: {avg_loss:.4f}"
     )
-
-# -------------------------------------------------
-# 5. Generate new digits by sampling a grid over latent space
-# -------------------------------------------------
-model.eval()
-n = 15
-digit_size = 28
-figure = np.zeros((digit_size * n, digit_size * n))
-
-grid_x = np.linspace(-3, 3, n)
-grid_y = np.linspace(-3, 3, n)[::-1]
+plt.plot(loss_curve, marker="o")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("VAE Training Curve")
+plt.show()
+encoder.eval()
+decoder.eval()
+mean_layer.eval()
+logvar_layer.eval()
 
 with torch.no_grad():
-    for i, yi in enumerate(grid_y):
-        for j, xi in enumerate(grid_x):
-            z_sample = torch.tensor([[xi, yi]], dtype=torch.float32).to(device)
-            x_decoded = model.decode(z_sample).cpu().numpy()
-            digit = x_decoded[0].reshape(digit_size, digit_size)
-            figure[
-                i * digit_size : (i + 1) * digit_size,
-                j * digit_size : (j + 1) * digit_size,
-            ] = digit
+    z = torch.randn(10, 2).to(device)
+    generated = decoder(z).cpu().numpy()
 
-plt.figure(figsize=(10, 10))
-plt.imshow(figure, cmap="Greys_r")
-plt.axis("off")
-plt.title("Digits generated by sampling the VAE latent space")
-plt.savefig(os.path.join(output_dir, "vae_pytorch_generated_digits.png"), dpi=150, bbox_inches="tight")
-plt.close()
+plt.figure(figsize=(10, 2))
 
-# -------------------------------------------------
-# 6. Visualize how real digits cluster in latent space (colored by true label)
-# -------------------------------------------------
-all_z_mean = []
+for i in range(10):
+    plt.subplot(1, 10, i + 1)
+    plt.imshow(
+        generated[i].reshape(28, 28),
+        cmap="gray"
+    )
+    plt.axis("off")
+
+plt.suptitle("Digits Generated by VAE")
+plt.show()
+all_z = []
 all_labels = []
 
 with torch.no_grad():
-    for x, y in train_loader:
-        x = x.to(device)
-        z_mean, _ = model.encode(x)
-        all_z_mean.append(z_mean.cpu().numpy())
-        all_labels.append(y.numpy())
+    for images, labels in test_loader:
+        x = images.view(-1, 784).to(device)
 
-all_z_mean = np.concatenate(all_z_mean, axis=0)
-all_labels = np.concatenate(all_labels, axis=0)
+        h = encoder(x)
+        mean = mean_layer(h)
 
-plt.figure(figsize=(10, 8))
-scatter = plt.scatter(all_z_mean[:, 0], all_z_mean[:, 1], c=all_labels, cmap="tab10", s=2)
-plt.colorbar(scatter, label="Digit label")
-plt.xlabel("z[0]")
-plt.ylabel("z[1]")
-plt.title("MNIST digits mapped into 2D latent space")
-plt.savefig(os.path.join(output_dir, "vae_pytorch_latent_space.png"), dpi=150, bbox_inches="tight")
-plt.close()
+        all_z.append(mean.cpu().numpy())
+        all_labels.append(labels.numpy())
+
+all_z = np.concatenate(all_z)
+all_labels = np.concatenate(all_labels)
+
+plt.figure(figsize=(7, 5))
+
+plt.scatter(
+    all_z[:, 0],
+    all_z[:, 1],
+    c=all_labels,
+    cmap="tab10",
+    s=3
+)
+
+plt.xlabel("Latent Dimension 1")
+plt.ylabel("Latent Dimension 2")
+plt.title("VAE Latent Space")
+plt.colorbar(label="Digit Label")
 plt.show()
-print("Done. Saved: vae_pytorch_generated_digits.png and vae_pytorch_latent_space.png")
