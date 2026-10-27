@@ -158,8 +158,7 @@ caption_input = Input(shape=(max_len,), name="caption_input")
 
 x = Embedding(
     input_dim=vocab_size,
-    output_dim=64,
-    mask_zero=True
+    output_dim=64
 )(caption_input)
 
 text_features = LSTM(64)(x)
