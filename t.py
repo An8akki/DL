@@ -30,13 +30,15 @@ series = df["Passengers"].values.astype("float32").reshape(-1, 1)
 print(df.head())
 print("Dataset shape:", series.shape)
 
+# Convert Month to datetime for clean x-axis year labels
+df["Month"] = pd.to_datetime(df["Month"])
+
 # Plot the original time series.
 plt.figure(figsize=(10, 4))
 plt.plot(df["Month"], series)
 plt.title("Monthly Airline Passengers (1949-1960)")
 plt.xlabel("Month")
 plt.ylabel("Passengers")
-plt.xticks(rotation=45)
 plt.tight_layout()
 plt.show()
 
