@@ -1,224 +1,260 @@
-"""
-Experiment 4: Image Caption Generator using CNN and LSTM
-==========================================================
-
-Dataset: Fashion-MNIST (tf.keras.datasets.fashion_mnist) — a dataset
-that ships DIRECTLY with Keras, so nothing needs to be downloaded from
-an external source and the lab is guaranteed to work offline-first / on
-any machine, and it trains fast (28x28 grayscale images).
-
-Why Fashion-MNIST for a *captioning* task?
--------------------------------------------
-Real captioning datasets (Flickr8k, MS-COCO) need multi-GB downloads and
-several hours of training, which does not fit a lab session. Fashion-MNIST
-already gives us labeled clothing images (10 classes), so we auto-generate
-short, varied natural-language captions from the class labels using a
-handful of templates (e.g. "a photo of a sneaker", "this picture shows a
-dress"). This keeps the full CNN encoder + LSTM decoder architecture, the
-tokenizer/vocabulary building, the training loop, and greedy caption
-inference all intact and end-to-end trainable in a couple of minutes on
-CPU — while still being a genuine "CNN extracts image features -> LSTM
-generates a sentence word by word" image-captioning pipeline.
-
-(If you want to swap in a real photo-captioning dataset later, e.g.
-Flickr8k, only the "1. Build (image, caption) pairs" section below needs
-to change — the model architecture and training/inference code is the
-same.)
-
-Framework: TensorFlow / Keras
-    pip install tensorflow numpy matplotlib
-"""
-
+import os
+import zipfile
 import random
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+
 from tensorflow.keras.datasets import fashion_mnist
+from tensorflow.keras.utils import load_img, img_to_array
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.utils import to_categorical
+
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
-    Input, Conv2D, MaxPooling2D, GlobalAveragePooling2D, Dense,
-    Embedding, LSTM, Add, Dropout
+    Input, Conv2D, MaxPooling2D, GlobalAveragePooling2D,
+    Dense, Embedding, LSTM, Add
 )
 
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
+# ==========================================================
+# METHOD 1: BUILT-IN FASHION-MNIST DATASET
+# Images are loaded into NumPy arrays, not an image folder.
+# This is a demonstration dataset and has labels, not captions.
+# ==========================================================
 
-# -------------------------------------------------------------------
-# 1. Build (image, caption) pairs from Fashion-MNIST
-# -------------------------------------------------------------------
 (x_train, y_train), (x_test, y_test) = fashion_mnist.load_data()
 
-# Normalize to [0,1] and add a channel dimension: (N, 28, 28) -> (N, 28, 28, 1)
-x_train = x_train.astype("float32")[..., np.newaxis] / 255.0
-x_test = x_test.astype("float32")[..., np.newaxis] / 255.0
+# Use a smaller subset to keep the demonstration manageable.
+x_train = x_train[:1000].astype("float32") / 255.0
+y_train = y_train[:1000]
 
-# Simplified class names (avoiding slashes/punctuation, which is friendlier
-# for a word-level tokenizer than the official "T-shirt/top" label).
-class_names = ["t-shirt", "trouser", "pullover", "dress", "coat",
-               "sandal", "shirt", "sneaker", "bag", "ankle boot"]
+x_test = x_test[:100].astype("float32") / 255.0
+y_test = y_test[:100]
 
-# A few caption templates per class -> gives linguistic variety instead
-# of one fixed sentence per class, which is what makes this a genuine
-# sequence-generation problem rather than pure classification.
-TEMPLATES = [
-    "a photo of a {}",
-    "this picture shows a {}",
-    "an image containing a {}",
-    "a small picture of a {}",
-    "here is a {}",
+class_names = [
+    "t-shirt", "trouser", "pullover", "dress", "coat",
+    "sandal", "shirt", "sneaker", "bag", "ankle boot"
 ]
 
+# Add the grayscale channel dimension expected by the CNN.
+x_train = x_train[..., np.newaxis]
+x_test = x_test[..., np.newaxis]
 
-def make_caption(label_idx):
-    name = class_names[label_idx]
-    article_fix = "an " + name if name[0] in "aeiou" else "a " + name
-    template = random.choice(TEMPLATES)
-    return "startseq " + template.format(name).replace("a " + name, article_fix) + " endseq"
+# Generate simple demonstration captions from the class labels.
+# These are synthetic captions, not original human-written captions.
+
+captions = []
+
+for label in y_train:
+    name = class_names[label]
+    article = "an" if name[0] in "aeiou" else "a"
+
+    templates = [
+        "this is " + article + " " + name,
+        "look at " + article + " " + name
+    ]
+
+    captions.append("startseq " + random.choice(templates) + " endseq")
 
 
-# To keep training fast for a lab session, use a subset of Fashion-MNIST.
-N_TRAIN, N_TEST = 4000, 500
-train_idx = np.random.choice(len(x_train), N_TRAIN, replace=False)
-test_idx = np.random.choice(len(x_test), N_TEST, replace=False)
+# ==========================================================
+# METHOD 2: CUSTOM IMAGE FOLDER + CSV
+# If using your own dataset, comment out METHOD 1 above.
+# Uncomment this section and update the paths.
+#
+# DATASET_PATH = r"C:\path\to\dataset"
+# IMAGE_FOLDER = os.path.join(DATASET_PATH, "images")
+# CAPTION_FILE = os.path.join(DATASET_PATH, "captions.csv")
+#
+# captions_df = pd.read_csv(CAPTION_FILE)
+#
+# images = []
+# captions = []
+#
+# for _, row in captions_df.iterrows():
+#     image_path = os.path.join(IMAGE_FOLDER, row["image_name"])
+#     if os.path.exists(image_path):
+#         img = load_img(image_path, target_size=(128, 128))
+#         images.append(img_to_array(img) / 255.0)
+#         captions.append("startseq " + str(row["caption"]) + " endseq")
+#
+# x_train = np.array(images)
+# y_train = None
+#
+# # For a proper experiment, split the images and captions into
+# # training and testing sets together, keeping their order aligned.
+# # Set x_test and y_test to the held-out images and labels/captions.
+#
+#
+# ==========================================================
+# METHOD 3: CUSTOM ZIP FILE
+# Extract the ZIP first, then use the folder-loading approach.
+#
+# ZIP_PATH = r"C:\path\to\dataset.zip"
+# EXTRACT_PATH = r"C:\path\to\extracted_dataset"
+#
+# with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
+#     zip_ref.extractall(EXTRACT_PATH)
+#
+# # Then set DATASET_PATH = EXTRACT_PATH in METHOD 2.
+# ==========================================================
 
-train_images = x_train[train_idx]
-train_captions = [make_caption(int(y_train[i])) for i in train_idx]
-test_images = x_test[test_idx]
-test_captions = [make_caption(int(y_test[i])) for i in test_idx]
+print("Training image shape:", x_train.shape)
+print("Number of captions:", len(captions))
+# The model processes word IDs instead of raw text.
+# The Tokenizer builds a vocabulary from the training captions.
 
-print("Example captions:", train_captions[:3])
+tokenizer = Tokenizer()
+tokenizer.fit_on_texts(captions)
 
-# -------------------------------------------------------------------
-# 2. Tokenize captions and build the vocabulary
-# -------------------------------------------------------------------
-tokenizer = Tokenizer(oov_token="<unk>")
-tokenizer.fit_on_texts(train_captions)
 vocab_size = len(tokenizer.word_index) + 1
-max_len = max(len(c.split()) for c in train_captions)
-print(f"Vocab size: {vocab_size}, Max caption length: {max_len}")
+sequences = tokenizer.texts_to_sequences(captions)
+
+max_len = max(len(seq) for seq in sequences)
+
+print("Vocabulary size:", vocab_size)
+print("Maximum caption length:", max_len)
+
+# Create next-word prediction examples.
+# Example:
+# Input: "startseq this"
+# Target: "is"
+
+X_img = []
+X_seq = []
+Y = []
+
+for i, seq in enumerate(sequences):
+    for j in range(1, len(seq)):
+        X_img.append(x_train[i])
+        X_seq.append(seq[:j])
+        Y.append(seq[j])
+
+# Pad all partial captions to the same length.
+X_seq = pad_sequences(X_seq, maxlen=max_len, padding="pre")
+
+X_img = np.array(X_img, dtype="float32")
+X_seq = np.array(X_seq)
+Y = np.array(Y)
+
+print("Image inputs:", X_img.shape)
+print("Caption inputs:", X_seq.shape)
+print("Next-word targets:", Y.shape)
+# CNN branch: extracts features from the image.
+image_input = Input(shape=x_train.shape[1:], name="image_input")
+
+x = Conv2D(32, (3, 3), activation="relu", padding="same")(image_input)
+x = MaxPooling2D((2, 2))(x)
+
+x = Conv2D(64, (3, 3), activation="relu", padding="same")(x)
+x = MaxPooling2D((2, 2))(x)
+
+x = GlobalAveragePooling2D()(x)
+image_features = Dense(64, activation="relu")(x)
 
 
-def encode_captions(captions):
-    return tokenizer.texts_to_sequences(captions)
+# LSTM branch: processes the caption words generated so far.
+caption_input = Input(shape=(max_len,), name="caption_input")
+
+x = Embedding(
+    input_dim=vocab_size,
+    output_dim=64,
+    mask_zero=True
+)(caption_input)
+
+text_features = LSTM(64)(x)
 
 
-train_seqs = encode_captions(train_captions)
-test_seqs = encode_captions(test_captions)
+# Combine image and text features.
+merged = Add()([image_features, text_features])
+merged = Dense(64, activation="relu")(merged)
 
-# -------------------------------------------------------------------
-# 3. Expand into (image, partial_caption) -> next_word training pairs
-#    e.g. for "startseq a dress endseq" we create:
-#       (img, [startseq])           -> a
-#       (img, [startseq, a])        -> dress
-#       (img, [startseq, a, dress]) -> endseq
-# -------------------------------------------------------------------
-
-
-def build_sequences(images, seqs):
-    X_img, X_seq, y = [], [], []
-    for img, seq in zip(images, seqs):
-        for t in range(1, len(seq)):
-            in_seq, out_word = seq[:t], seq[t]
-            in_seq = pad_sequences([in_seq], maxlen=max_len)[0]
-            X_img.append(img)
-            X_seq.append(in_seq)
-            y.append(out_word)
-    return np.array(X_img), np.array(X_seq), to_categorical(y, num_classes=vocab_size)
-
-
-X_img_train, X_seq_train, y_train_cap = build_sequences(train_images, train_seqs)
-print("Training pairs:", X_img_train.shape[0])
-
-# -------------------------------------------------------------------
-# 4. Model: CNN encoder + LSTM decoder (classic "merge" architecture)
-# -------------------------------------------------------------------
-EMBED_DIM = 128
-
-# ---- CNN branch: extracts a fixed-length feature vector from the image
-# Fashion-MNIST images are small (28x28, grayscale), so a compact CNN is
-# enough to get good features.
-image_input = Input(shape=(28, 28, 1), name="image_input")
-cnn = Conv2D(32, (3, 3), activation="relu", padding="same")(image_input)
-cnn = MaxPooling2D()(cnn)
-cnn = Conv2D(64, (3, 3), activation="relu", padding="same")(cnn)
-cnn = MaxPooling2D()(cnn)
-cnn = GlobalAveragePooling2D()(cnn)
-image_features = Dense(EMBED_DIM, activation="relu")(cnn)
-image_features = Dropout(0.3)(image_features)
-
-# ---- LSTM branch: encodes the partial caption seen so far
-seq_input = Input(shape=(max_len,), name="caption_input")
-seq_embed = Embedding(vocab_size, EMBED_DIM, mask_zero=True)(seq_input)
-seq_embed = Dropout(0.3)(seq_embed)
-seq_features = LSTM(EMBED_DIM)(seq_embed)
-
-# ---- Merge both branches and predict the next word
-merged = Add()([image_features, seq_features])
-merged = Dense(EMBED_DIM, activation="relu")(merged)
+# Predict the next word in the caption.
 output = Dense(vocab_size, activation="softmax")(merged)
 
-caption_model = Model(inputs=[image_input, seq_input], outputs=output)
-caption_model.compile(optimizer="adam", loss="categorical_crossentropy",
-                       metrics=["accuracy"])
-caption_model.summary()
-
-# -------------------------------------------------------------------
-# 5. Train
-# -------------------------------------------------------------------
-history = caption_model.fit(
-    [X_img_train, X_seq_train], y_train_cap,
-    epochs=10, batch_size=64, validation_split=0.1, verbose=1
+model = Model(
+    inputs=[image_input, caption_input],
+    outputs=output
 )
 
-plt.figure(figsize=(6, 4))
-plt.plot(history.history["loss"], label="train loss")
-plt.plot(history.history["val_loss"], label="val loss")
-plt.title("Caption model training loss")
+model.compile(
+    optimizer="adam",
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.summary()
+# The model learns to predict the next word from the image
+# and the words already present in the partial caption.
+
+history = model.fit(
+    [X_img, X_seq],
+    Y,
+    epochs=5,
+    batch_size=64,
+    validation_split=0.1
+)
+# Visualize training progress.
+# This displays the graph without saving it as a PNG file.
+
+plt.figure(figsize=(8, 5))
+
+plt.plot(history.history["loss"], label="Training Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+
+plt.title("CNN + LSTM Training Loss")
 plt.xlabel("Epoch")
-plt.ylabel("Categorical cross-entropy")
+plt.ylabel("Loss")
 plt.legend()
-plt.tight_layout()
-plt.savefig("caption_training_loss.png")
-plt.close()
+plt.grid(True)
 
-# -------------------------------------------------------------------
-# 6. Inference: generate a caption word-by-word (greedy decoding)
-# -------------------------------------------------------------------
-index_to_word = {idx: word for word, idx in tokenizer.word_index.items()}
+plt.show()
+# Create a mapping from numerical word IDs back to words.
+index_to_word = {
+    index: word
+    for word, index in tokenizer.word_index.items()
+}
 
+# Generate captions for six test images.
+for i in range(min(6, len(x_test))):
 
-def generate_caption(image, max_length=max_len):
-    in_text = "startseq"
-    for _ in range(max_length):
-        seq = tokenizer.texts_to_sequences([in_text])[0]
-        seq = pad_sequences([seq], maxlen=max_length)
-        pred = caption_model.predict([np.expand_dims(image, 0), seq], verbose=0)
-        next_idx = int(np.argmax(pred))
-        next_word = index_to_word.get(next_idx, "")
-        if next_word == "" or next_word == "endseq":
+    img = x_test[i]
+    generated_caption = "startseq"
+
+    for j in range(max_len):
+
+        # Convert the current caption into word IDs.
+        seq = tokenizer.texts_to_sequences([generated_caption])[0]
+        seq = pad_sequences([seq], maxlen=max_len, padding="pre")
+
+        # Predict the next word.
+        prediction = model.predict(
+            [img[np.newaxis, ...], seq],
+            verbose=0
+        )
+
+        next_word_id = np.argmax(prediction)
+
+        # Stop if padding or an unknown token is predicted.
+        if next_word_id == 0:
             break
-        in_text += " " + next_word
-    return in_text.replace("startseq", "").strip()
 
+        next_word = index_to_word.get(next_word_id, "")
 
-# -------------------------------------------------------------------
-# 7. Show a few sample predictions on unseen test images
-# -------------------------------------------------------------------
-fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-sample_indices = np.random.choice(len(test_images), 6, replace=False)
-for ax, idx in zip(axes.ravel(), sample_indices):
-    img = test_images[idx]
-    true_label = class_names[int(y_test[test_idx[idx]])]
-    pred_caption = generate_caption(img)
-    ax.imshow(img.squeeze(), cmap="gray")
-    ax.set_title(f"True: {true_label}\nGenerated: {pred_caption}", fontsize=9)
-    ax.axis("off")
-plt.tight_layout()
-plt.savefig("caption_predictions.png")
-plt.close()
+        # Stop when the caption reaches its end token.
+        if next_word == "endseq" or next_word == "":
+            break
 
-print("\nSaved plots: caption_training_loss.png, caption_predictions.png")
-print("Example generated caption:", generate_caption(test_images[0]))
+        generated_caption += " " + next_word
+
+    display_caption = generated_caption.replace("startseq", "").strip()
+
+    # Show the image and generated caption.
+    plt.figure(figsize=(4, 4))
+    plt.imshow(img.squeeze(), cmap="gray")
+    plt.title(
+        "Actual: " + class_names[y_test[i]] +
+        "\nGenerated: " + display_caption
+    )
+    plt.axis("off")
+    plt.show()
